@@ -1,5 +1,3 @@
-# week08/.github/workflows/frontend_ci.yml
-
 name: Frontend CI - Build & Push Image
 
 on:
@@ -12,10 +10,9 @@ on:
       - '.github/workflows/frontend_ci.yml'
 
 env:
-  # Secrets you already created
   ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}   # e.g., affan722acr01.azurecr.io
   ACR_NAME:         ${{ secrets.ACR_NAME }}           # e.g., affan722acr01
-  IMAGE_TAG:        latest                            # keep latest for AKS deploys
+  IMAGE_TAG:        latest
 
 jobs:
   build_and_push_frontend:
@@ -32,18 +29,12 @@ jobs:
 
       - name: Inject BACKEND URLs into frontend/main.js (before build)
         run: |
-          set -euo pipefail
-          # Your live backend IPs
           PRODUCT_URL="http://4.254.49.239:8000"
           ORDER_URL="http://20.227.83.188:8001"
-
-          echo "Replacing placeholders in frontend/main.js ..."
           sed -i "s|_PRODUCT_API_URL_|${PRODUCT_URL}|g" frontend/main.js
           sed -i "s|_ORDER_API_URL_|${ORDER_URL}|g"     frontend/main.js
-
-          echo "Preview of main.js after replacement:"
-          grep -n "API_BASE_URL" -n frontend/main.js || true
-          head -n 40 frontend/main.js
+          echo "After replacement:"
+          grep API_BASE_URL frontend/main.js
 
       - name: Login to Azure Container Registry
         run: az acr login --name "${{ env.ACR_NAME }}"
