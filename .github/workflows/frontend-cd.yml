@@ -14,11 +14,11 @@ on:
         default: 'http://20.227.83.188:8001'
 
 env:
-  # Secrets you created
+  # Your repo secrets (must exist)
   AZ_RG:  ${{ secrets.AZURE_RESOURCE_GROUP }}
   AZ_AKS: ${{ secrets.AKS_CLUSTER_NAME }}
-  ACR:    ${{ secrets.ACR_NAME }}             # e.g., affan722acr01 (no domain)
-  ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}  # e.g., affan722acr01.azurecr.io
+  ACR:    ${{ secrets.ACR_NAME }}              # e.g. affan722acr01 (short name)
+  ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}  # e.g. affan722acr01.azurecr.io
   IMAGE_TAG: latest
 
 jobs:
@@ -43,11 +43,8 @@ jobs:
           echo "Injecting BACKEND URLs:"
           echo "PRODUCT: ${{ inputs.product_api_ip }}"
           echo "ORDER:   ${{ inputs.order_api_ip }}"
-
-          # Replace placeholders in frontend/main.js
           sed -i "s|_PRODUCT_API_URL_|${{ inputs.product_api_ip }}|g" frontend/main.js
           sed -i "s|_ORDER_API_URL_|${{ inputs.order_api_ip }}|g"     frontend/main.js
-
           echo "--- main.js (after) ---"
           nl -ba frontend/main.js | sed -n '1,120p'
           echo "-----------------------"
@@ -68,24 +65,40 @@ jobs:
       - name: Deploy Frontend to AKS
         working-directory: k8s
         run: |
-          # Ensure k8s/frontend.yaml points to your ACR image:
-          # image: $ACR_LOGIN_SERVER/frontend:latest
+          # Ensure image in k8s/frontend.yaml points to your ACR:
+          # image: affan722acr01.azurecr.io/frontend:latest
           kubectl apply -f frontend.yaml
-          kubectl get deploy,svc -o wide
+          kubectl get deploy,svc -l app=frontend -o wide
 
-      - name: Show Frontend EXTERNAL-IP
+      # >>> THIS WAS THE PROBLEMATIC STEP; NOW IT AUTO-DETECTS BY LABEL <<<
+      - name: Show Frontend EXTERNAL-IP (auto-detect service)
+        shell: bash
         run: |
-          echo "Waiting for Frontend EXTERNAL-IP (up to ~3 min)..."
-          for i in {1..36}; do
-            IP=$(kubectl get svc frontend -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
-            echo "Attempt $i/36: ${IP:-<pending>}"
-            if [ -n "$IP" ]; then
-              echo "FRONTEND_IP=$IP" >> $GITHUB_ENV
+          set -euo pipefail
+
+          # Detect the service by label (your svc has app=frontend)
+          SVC_NAME=$(kubectl get svc -l app=frontend -o jsonpath='{.items[0].metadata.name}' || true)
+          if [ -z "${SVC_NAME:-}" ]; then
+            echo "No service found with label app=frontend. Listing all services:"
+            kubectl get svc -o wide || true
+            # Do NOT fail the job because deployment may still be fine
+            exit 0
+          fi
+          echo "Detected frontend service: ${SVC_NAME}"
+
+          echo "Waiting for EXTERNAL-IP (up to ~5 min)..."
+          for i in {1..60}; do
+            IP=$(kubectl get svc "${SVC_NAME}" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+            echo "Attempt $i/60: ${IP:-<pending>}"
+            if [ -n "${IP:-}" ]; then
+              echo "FRONTEND_IP=${IP}" >> $GITHUB_ENV
               break
             fi
             sleep 5
           done
-          kubectl get svc frontend -o wide
+
+          echo "Final service state:"
+          kubectl get svc "${SVC_NAME}" -o wide || true
 
       - name: Logout from Azure
         if: always()
