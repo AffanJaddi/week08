@@ -2,8 +2,8 @@
 
 document.addEventListener('DOMContentLoaded', () => {
     // API endpoints for the Product and Order services (running on AKS)
-    const PRODUCT_API_BASE_URL = 'http://4.254.49.239:8000/api';
-    const ORDER_API_BASE_URL   = 'http://20.227.83.188:8001/api';
+    const PRODUCT_API_BASE_URL = 'http://4.254.49.239:8000';
+    const ORDER_API_BASE_URL   = 'http://20.227.83.188:8001';
     // DOM Elements
     const messageBox = document.getElementById('message-box');
     const productForm = document.getElementById('product-form');
