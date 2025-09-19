@@ -4,10 +4,11 @@ on:
   workflow_dispatch: {}
 
 env:
+  # Secrets you already created in your repo settings
   AZ_RG:  ${{ secrets.AZURE_RESOURCE_GROUP }}
   AZ_AKS: ${{ secrets.AKS_CLUSTER_NAME }}
   ACR:    ${{ secrets.ACR_NAME }}
-  # If you use a namespace secret, set it here, otherwise default to "default"
+  # Namespace to use (falls back to "default" if no secret provided)
   AKS_NAMESPACE: ${{ secrets.AKS_NAMESPACE || 'default' }}
 
 jobs:
@@ -27,9 +28,10 @@ jobs:
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
+          enable-AzPSSession: true
 
-      # Optional but harmless if already attached
-      - name: Attach ACR to AKS (ensures pulls can succeed)
+      # Safe to run even if already attached; ensures AKS can pull from ACR
+      - name: Attach ACR to AKS
         run: |
           az aks update \
             --name "$AZ_AKS" \
@@ -43,11 +45,11 @@ jobs:
             --name "$AZ_AKS" \
             --overwrite-existing
           kubectl config set-context --current --namespace="${AKS_NAMESPACE}"
+          kubectl get nodes
 
       - name: Deploy Backend Infrastructure (ConfigMaps, Secrets, DBs)
         working-directory: k8s
         run: |
-          # Apply only if these files exist in your repo; ignore if not
           [ -f configmaps.yaml ] && kubectl apply -f configmaps.yaml || echo "configmaps.yaml not found, skipping"
           [ -f secrets.yaml ]    && kubectl apply -f secrets.yaml    || echo "secrets.yaml not found, skipping"
           kubectl apply -f product-db.yaml
@@ -63,29 +65,34 @@ jobs:
           echo "Current pods:"
           kubectl get po -o wide
 
-      - name: Wait for Backend LoadBalancer IPs (up to ~5 min)
+      - name: Wait for Backend LoadBalancer IPs (auto-detect service names)
         shell: bash
         run: |
           set -euo pipefail
-          svc_product="product-service"
-          svc_order="order-service"
 
-          echo "Waiting for external IPs on $svc_product and $svc_order..."
+          # Try to discover service names by label. Fallback to common suffixed names.
+          svc_product=$(kubectl get svc -l app=product-service -o jsonpath='{.items[0].metadata.name}' || true)
+          svc_order=$(kubectl get svc -l app=order-service -o jsonpath='{.items[0].metadata.name}' || true)
+
+          if [[ -z "${svc_product}" ]]; then svc_product="product-service-w08e1"; fi
+          if [[ -z "${svc_order}" ]]; then svc_order="order-service-w08e1"; fi
+
+          echo "Using services: product=$svc_product  order=$svc_order"
+
           for i in {1..60}; do
             PRODUCT_IP=$(kubectl get svc "$svc_product" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' || true)
-            ORDER_IP=$(kubectl get svc "$svc_order" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' || true)
+            ORDER_IP=$(kubectl get svc "$svc_order"   -o jsonpath='{.status.loadBalancer.ingress[0].ip}' || true)
 
             echo "Attempt $i/60  product: ${PRODUCT_IP:-<pending>}  order: ${ORDER_IP:-<pending>}"
+
             if [[ -n "${PRODUCT_IP:-}" && -n "${ORDER_IP:-}" ]]; then
-              echo "IPs assigned!"
-              echo "PRODUCT_IP=$PRODUCT_IP" >> $GITHUB_ENV
-              echo "ORDER_IP=$ORDER_IP"     >> $GITHUB_ENV
+              echo "PRODUCT_IP=$PRODUCT_IP" >> "$GITHUB_ENV"
+              echo "ORDER_IP=$ORDER_IP"     >> "$GITHUB_ENV"
               break
             fi
             sleep 5
           done
 
-          # Fail if we still don't have both IPs
           if [[ -z "${PRODUCT_IP:-}" || -z "${ORDER_IP:-}" ]]; then
             echo "Error: One or both LoadBalancer IPs not assigned in time."
             kubectl get svc -o wide
@@ -94,11 +101,11 @@ jobs:
 
       - name: Capture Product Service IP for Workflow Output
         id: get_product_ip
-        run: echo "external_ip=${{ env.PRODUCT_IP }}" >> $GITHUB_OUTPUT
+        run: echo "external_ip=${{ env.PRODUCT_IP }}" >> "$GITHUB_OUTPUT"
 
       - name: Capture Order Service IP for Workflow Output
         id: get_order_ip
-        run: echo "external_ip=${{ env.ORDER_IP }}" >> $GITHUB_OUTPUT
+        run: echo "external_ip=${{ env.ORDER_IP }}" >> "$GITHUB_OUTPUT"
 
       - name: Logout from Azure
         if: always()
